@@ -1,0 +1,130 @@
+---
+title: "NYPD-Shootings"
+output:
+  html_document: default
+  pdf_document: default
+date: "2024-04-02"
+---
+
+# Setup
+
+This first code block will load any libraries that will be depended on in the future:
+
+```{r setup}
+library(tidyverse)
+library(lubridate)
+```
+
+The following 2 packages that are different from what was used in class are included to create a decision tree later on:
+
+```{r setup2}
+library(rpart)
+library(rpart.plot)
+```
+
+
+# Data Download
+
+This block will download the NYPD Shooting data from the specified url and store it:
+
+```{r download-data}
+url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+nypd <- read_csv(url, show_col_types = FALSE)
+```
+
+
+# Data Cleaning
+
+The features that were not selected for evaluation were:
+
+* INCIDENT_KEY: This was a unique arbitrary identifier to label each event and therefore had no statistical use.
+* Any feature specifying the specific X/Y or Latitude/Longitude coordinates of the shooting. Other location information such as the boro as well as descriptions of the location are already provided, and these could arguably be more important than the raw numbers representing their coordinates.
+* JURISDICTION_CODE: All values except for a few NA's were an integer between 0 and 2 inclusive. Honestly unsure what these mean, but other data is already provided with much more apparent uses.
+
+```{r tidy-data}
+nypd <- nypd %>%
+    select(-c(INCIDENT_KEY, X_COORD_CD, Y_COORD_CD, Latitude, Longitude, Lon_Lat, JURISDICTION_CODE))
+```
+
+
+# Data Visualization and Analysis
+
+## Graph 1: Victim and Perpetrator Age
+
+
+```{r vis1}
+nypd %>%
+    filter(VIC_AGE_GROUP != 'UNKNOWN',
+           VIC_AGE_GROUP != '1022',
+           PERP_AGE_GROUP != '1020',
+           PERP_AGE_GROUP != '224',
+           PERP_AGE_GROUP != '940',
+           PERP_AGE_GROUP != '1028',
+           PERP_AGE_GROUP != '(null)',
+           !is.null(PERP_AGE_GROUP)
+    ) %>%
+    ggplot(aes(x = PERP_AGE_GROUP, y = VIC_AGE_GROUP)) +
+    geom_bin_2d()
+```
+
+Graph 1 shows which age groups targeted others in cases where at least the victim's age group was known. Many of the shootings taking place are by those of ages 18-44 targeting others in the same age group.
+
+## Graph 2: Shooting Counts Across 24 Hours of Day
+
+```{r vis2}
+nypd %>%
+    mutate(OCCUR_TIME = hms(OCCUR_TIME)) %>%
+    ggplot(aes(x = OCCUR_TIME, y = BORO)) +
+    geom_bin_2d() +
+    scale_x_time()
+```
+
+Graph 2 shows how many shootings took place at a given time of day in a given boro. Since Brooklyn and the Bronx had the most shootings overall, they are shown brighter overall in this graph. Manhattan and Queens follow, being darker but still having visible counts during the night hours. Staten Island is almost completely dark in this graph because it had by far the fewest shootings overall.
+
+## Graph 3: Fraction of Boro's Shootings Across 24 Hours
+
+
+```{r vis3}
+nypd %>%
+    mutate(OCCUR_HOUR = hour(OCCUR_TIME)) %>%
+    add_count(BORO, name = "BORO_TOTAL") %>%
+    add_count(BORO, OCCUR_HOUR, name = "BORO_PER_HOUR") %>%
+    mutate(BORO_FRAC_OF_TOTAL = BORO_PER_HOUR / BORO_TOTAL) %>%
+    mutate(OCCUR_TIME = hms(OCCUR_TIME)) %>%
+    ggplot(aes(x = OCCUR_TIME, y = BORO, z = BORO_FRAC_OF_TOTAL)) +
+    stat_summary_2d() +
+    scale_x_time()
+```
+
+
+Graph 3 shows what percentage of shootings in each boro occurred at the specified hour of the day. The distribution of shootings between certain hours of the day is fairly consistent, where most of a boro's shootings occur during night hours. The first three listed boros have some slight fluctuations outside of the expected curve since they have the least amount of data associated with them, while Brooklyn and the Bronx have extremely smooth transitions between day and night.
+
+
+# Model
+
+```{r mod}
+nypd_hour <- nypd %>%
+    mutate(OCCUR_HOUR = hour(OCCUR_TIME)) %>%
+    filter(VIC_AGE_GROUP != 'UNKNOWN',
+           VIC_AGE_GROUP != '1022',
+           PERP_AGE_GROUP != '1020',
+           PERP_AGE_GROUP != '224',
+           PERP_AGE_GROUP != '940',
+           PERP_AGE_GROUP != 'UNKNOWN',
+           PERP_AGE_GROUP != '(null)',
+           PERP_AGE_GROUP != '1028',
+           !is.null(PERP_AGE_GROUP))
+
+tree <- rpart(PERP_AGE_GROUP ~ OCCUR_HOUR + BORO + VIC_AGE_GROUP, data = nypd_hour, control=rpart.control(cp=.0001))
+printcp(tree)
+best <- tree$cptable[which.min(tree$cptable[,"xerror"]),"CP"]
+pruned_tree <- prune(tree, cp=best)
+prp(pruned_tree, faclen = 0, extra = 1, roundint = F, digits = 5)
+```
+
+I tried to create a decision tree to determine if a perpetrator's age could be guessed by which boro and hour the shooting took place at. The model ended up guessing that the only possible perpetrators of a shooting fall in the age groups 18-24 and 25-44. This makes some amount of sense due to the heavy imbalance of perpetrators in these age groups over other ones. Another possible factor leading to this tree could be the imbalance of shootings in Brooklyn and the Bronx compared to other boros.
+
+
+# Possible Bias
+
+Although some of the general trends shown in this data may reflect the real world, the exact numbers may be far from correct. Both the times of day where more shootings were recorded and the most commonly reported age groups reflect common stereotypes about who would perform a shooting and when. However, more investigation would be required to determine how officers handle situations that fall under these stereotypes compared to other situations as well as how they are detected in the first place. Differences of policies, actions, and assumptions in different situations could absolutely lead to intentional or accidental bias in areas that would require more investigation.
